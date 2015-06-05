@@ -19,33 +19,69 @@ class AlCapROOT(object):
         :param treename: name of the tree in root dataset
         """
         self.entry_data = root2array(path, treename=treename)
-        self.hits_data = self._get_hits()
+        self.hits_data, self.hits_to_entries, self.entry_to_hits\
+                = self._get_hits()
 
     @property
     def n_entries(self):
         return len(self.entry_data)
 
+    @property
+    def n_hits(self):
+        return sum(self.entry_data["M_nHits"])
+
     def _get_hits(self):
         """
         Creates numpy array of hits, each with their own entry in the table
         """
+
         # Variables defined over the whole entry
         entry_variables = ["M_nHits", "evt_num", "run_num", "weight"]
-        # Variables defiend for each it
-        hit_variables = list(set(self.entry_data[0].dtype.names) -
-                             set(entry_variables))
-        # Define new array for all of the hits
-        all_hits = np.zeros((sum(self.entry_data["M_nHits"])),
-                                dtype=self.entry_data[0].dtype)
+        # Variables defiend for each hit
+        hit_variables = list(set(self.entry_data[0].dtype.names)\
+                           - set(entry_variables))
+        # Get all names in the correct order
+        all_names = hit_variables + entry_variables
+
+        # Create a look up table that maps from hit number to event number
+        hits_to_events = np.zeros(self.n_hits)
+        # Create a look up table that maps from event number to first hit in
+        # that event
+        event_to_hits = np.zeros(self.n_entries)
         i = 0
         for entry in range(self.n_entries):
-            for hit in range(self.entry_data[entry]["M_nHits"]):
-                for evt_var in entry_variables:
-                    all_hits[i][evt_var] = self.entry_data[entry][evt_var]
-                for hit_var in hit_variables:
-                    all_hits[i][hit_var] = self.entry_data[entry][hit_var][hit]
-                i += 1
-        return all_hits
+            event_to_hits[entry] = i
+            event_hits = self.entry_data[entry]["M_nHits"]
+            hits_to_events[i:i+event_hits] = entry
+            i += event_hits
+        hits_to_events = hits_to_events.astype(int)
+
+        # Get columns for each hit specific variable
+        all_columns = [np.concatenate(self.entry_data[hit_var])\
+                       for hit_var in hit_variables]
+
+        # Stretch out the event variables across corresponding hits
+        for ent_var in entry_variables:
+            new_column = self.entry_data[ent_var][hits_to_events]
+            all_columns.append(new_column)
+
+        # Create a record array from these columns, use the name names as before
+        hits_table = np.rec.fromarrays(all_columns, names=(all_names))
+        return hits_table, hits_to_events.astype(int), event_to_hits.astype(int)
+
+    def get_event_to_hits(self, events):
+        """
+        Returns the hits from the given events
+        """
+        hits_array = [0]
+        for entry in events:
+            first_hit = self.entry_to_hits[entry]
+            last_hit = self.entry_data[entry]["M_nHits"] + first_hit
+            hits = range(first_hit, last_hit)
+            hits_array.extend(hits)
+        hits_array = np.array(hits_array)
+        hits_array = np.trim_zeros(hits_array)
+        return hits_array.astype(int)
 
     def filter_hits(self, variable, value):
         """
